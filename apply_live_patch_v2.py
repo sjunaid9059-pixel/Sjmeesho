@@ -231,6 +231,31 @@ routing_new = '''        ns = "u%s:%s" % (int(user.get("id") or 0), did)
 if app.count(routing_old) != 1:
     raise RuntimeError("Telegram device routing: expected 1 match")
 app = app.replace(routing_old, routing_new, 1)
+
+fod_old = '''@app.get("/api/account/fod")
+async def api_fod():
+    acc = next((a for a in db["accounts"] if a.get("id") == db["active_id"]), None)
+    if not acc:
+        return {"offer": None, "rolled": False, "message": "Select an account first."}
+    eligible = bool(acc.get("is_first_order")) and not acc.get("order_placed")
+    if not eligible:
+        return {"offer": None, "message": "This account is not a first-time buyer — no 1st-order offer applies.",
+                "bucket": "NONE", "rolled": False, "bound": False}
+    offer = db.get("picked_offer")
+    if acc.get("order_placed"):
+        return {"offer": None, "message": "Discount already used on this account.", "bucket": acc.get("bucket", "USED")}
+    bound = acc.get("bound_offer")
+    if bound:
+        return {"offer": bound, "bucket": bound.get("id"), "bound": True}
+    if offer:
+        return {"offer": offer, "bucket": offer.get("id"), "bound": False, "rolled": True}
+    return {"offer": None, "bucket": "FREE", "rolled": False, "bound": False}
+
+
+'''
+if app.count(fod_old) != 1:
+    raise RuntimeError("offer route cleanup: expected 1 old handler")
+app = app.replace(fod_old, "", 1)
 app_path.write_text(app, encoding="utf-8")
 
 
