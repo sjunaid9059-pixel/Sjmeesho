@@ -12,8 +12,8 @@ CFG_PATH = os.path.join(BASE_DIR, "bot_config.json")
 def load_cfg():
     with open(CFG_PATH, "r", encoding="utf-8") as f:
         cfg = json.load(f)
-    cfg["token"] = os.environ.get("BOT_TOKEN", cfg.get("token", ""))
-    cfg["shop_url"] = os.environ.get("SHOP_URL", cfg.get("shop_url", "")).rstrip("/")
+    cfg["token"] = (os.environ.get("BOT_TOKEN") or cfg.get("token") or "").strip()
+    cfg["shop_url"] = (os.environ.get("SHOP_URL") or os.environ.get("WEBAPP_URL") or cfg.get("shop_url") or "").rstrip("/")
     return cfg
 
 
@@ -25,8 +25,12 @@ API = "https://api.telegram.org/bot" + TOKEN
 
 def api_call(method, **params):
     r = httpx.post(API + "/" + method, json=params, timeout=60)
-    r.raise_for_status()
-    return r.json()
+    if not r.is_success:
+        raise RuntimeError(f"Telegram HTTP {r.status_code} in {method}: {r.text[:300]}")
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram {method} failed: {data.get('description') or data}")
+    return data
 
 
 def current_shop_url():
@@ -77,6 +81,8 @@ def handle_message(m):
 
 
 def main():
+    if not TOKEN or TOKEN.startswith("YOUR_"):
+        raise RuntimeError("BOT_TOKEN is missing in Render environment")
     print("token_valid=getMe", flush=True)
     me = api_call("getMe")
     print("bot =@" + (me["result"].get("username") or "?"), flush=True)
@@ -110,7 +116,7 @@ def main():
                 if refresh_menu():
                     last_menu_refresh = time.time()
             up = api_call("getUpdates", timeout=30, limit=50,
-                          offset=last_id + 1 if last_id else -1,
+                          offset=last_id + 1 if last_id else 0,
                           allowed_updates=["message", "callback_query"])
             for u in up.get("result", []):
                 last_id = max(last_id, u.get("update_id", last_id))
