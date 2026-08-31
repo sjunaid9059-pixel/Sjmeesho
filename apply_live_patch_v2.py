@@ -13,6 +13,12 @@ html_path = ROOT / "index.html"
 app = app_path.read_text(encoding="utf-8")
 html = html_path.read_text(encoding="utf-8")
 
+# Render may use a persistent disk. Do not fail or mutate files twice when the
+# repair is already present from an earlier boot.
+if 'SESSION_COOKIE = "sj_session"' in app and 'credentials: "same-origin"' in html:
+    print("live patch already present")
+    raise SystemExit(0)
+
 app = once(app, "from fastapi import FastAPI, Request", "from fastapi import FastAPI, Request, Response", "fastapi import")
 app = once(app, "\n\ndef _secret():", "\n\nSESSION_COOKIE = \"sj_session\"\ntry:\n    SESSION_TTL_SECONDS = max(86400, int(os.getenv(\"SESSION_TTL_SECONDS\", str(30 * 86400))))\nexcept (TypeError, ValueError):\n    SESSION_TTL_SECONDS = 30 * 86400\n\n\ndef _secret():", "session constants")
 app = once(app, "def _issue_token(username, ttl=7 * 86400):", "def _issue_token(username, ttl=None):", "token ttl")
@@ -256,6 +262,14 @@ async def api_fod():
 if app.count(fod_old) != 1:
     raise RuntimeError("offer route cleanup: expected 1 old handler")
 app = app.replace(fod_old, "", 1)
+
+# Never fabricate a Meesho-branded payment URI. A payment instrument must come
+# from the provider response; otherwise the UI must not send money to a
+# hard-coded VPA that the shop does not control.
+fallback_uri = '''    return (f"upi://pay?tr={ref}&pa=MEESHOONLINEPG@ybl&mc=5262"
+            f"&pn=MEESHO%20TECHNOLOGIES%20PRIVATE%20LIMITED&am={amt}&cu=INR&mode=04&purpose=00")'''
+app = once(app, fallback_uri, '    return ""', "remove hard-coded payment URI")
+
 app_path.write_text(app, encoding="utf-8")
 
 
