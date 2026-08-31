@@ -11,3 +11,4 @@ if [ -f bot.py ]; then
 fi
 echo "Starting SJ Shop on http://$HOST:$PORT"
 exec python3 -m uvicorn app:app --host "$HOST" --port "$PORT" --workers 1
+# Live patch workflow trigger
