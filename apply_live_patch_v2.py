@@ -211,6 +211,26 @@ if app.count(rating_old) != 1:
     raise RuntimeError("rating mapping: expected 1 match")
 app = app.replace(rating_old, rating_new, 1)
 
+
+routing_old = '''        ns = "u%s:%s" % (int(user.get("id") or 0), did)
+    else:
+        ns = "anon:" + did'''
+routing_new = '''        ns = "u%s:%s" % (int(user.get("id") or 0), did)
+        current = DEVICES.get(ns) or {}
+        # Telegram WebApps can rotate their browser device id. If the new
+        # namespace is empty, reuse the user's only existing data namespace
+        # so linked accounts and orders do not disappear after navigation.
+        if not current.get("accounts") and not current.get("orders"):
+            candidates = [key for key, value in DEVICES.items()
+                          if key.startswith("u%s:" % int(user.get("id") or 0))
+                          and ((value or {}).get("accounts") or (value or {}).get("orders"))]
+            if len(candidates) == 1:
+                ns = candidates[0]
+    else:
+        ns = "anon:" + did'''
+if app.count(routing_old) != 1:
+    raise RuntimeError("Telegram device routing: expected 1 match")
+app = app.replace(routing_old, routing_new, 1)
 app_path.write_text(app, encoding="utf-8")
 
 
