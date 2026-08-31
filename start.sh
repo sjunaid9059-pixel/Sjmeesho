@@ -10,7 +10,4 @@ if [ -f bot.py ]; then
   echo "Telegram bot supervisor started"
 fi
 echo "Starting SJ Shop on http://$HOST:$PORT"
-if [ -f apply_live_patch_v2.py ]; then
-  python3 apply_live_patch_v2.py
-fi
 exec python3 -m uvicorn app:app --host "$HOST" --port "$PORT" --workers 1
