@@ -1,3 +1,4 @@
+import live_bootstrap
 """Real Meesho API client — OTPLESS login flow + FOD (first-order discount).
 
 Flow (reverse-engineered from Fiddler captures + decoded APK):
