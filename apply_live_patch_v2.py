@@ -84,6 +84,122 @@ if 'if acc.get("is_first_order"):' in online:
     block='    if acc.get("is_first_order"):\n        acc["is_first_order"] = False\n        acc["order_placed"] = True\n'
     online=online.replace(block,'')
 app = app[:s] + online + app[e:]
+
+# Additional production repairs applied after the original v2 patch.
+# These are idempotent within a single Render boot and keep the startup patch durable.
+auth_old = '''async def api_auth_me(response: Response = None):
+    u = _current_user()
+    if not u:
+        return {"authenticated": False}
+    token = _issue_token(u.get("username"))
+    _set_session_cookie(response, token)
+    out = _auth_me(u)
+    out["token"] = token
+    return out'''
+auth_new = '''async def api_auth_me(request: Request = None, response: Response = None):
+    u = _current_user()
+    if u and request is not None:
+        try:
+            tg_id = _tg_user_id(request.headers.get("X-Tg-Init-Data"))
+            if tg_id is not None:
+                users = _load_users()
+                target = users.get(u.get("username")) or u
+                _apply_telegram_grant(target, str(tg_id))
+                users[target.get("username")] = target
+                _save_users(users)
+                u = target
+        except Exception:
+            pass
+    if not u:
+        return {"authenticated": False}
+    token = _issue_token(u.get("username"))
+    _set_session_cookie(response, token)
+    out = _auth_me(u)
+    out["token"] = token
+    return out'''
+if app.count(auth_old) != 1:
+    raise RuntimeError("auth/me follow-up: expected 1 match")
+app = app.replace(auth_old, auth_new)
+
+mark_old = '''def _mark_order_paid(order, user):
+    if not isinstance(order, dict):
+        return
+    order["status_id"] = "STATUS_ID_ORDERED"
+    order["status_text"] = "Order Placed"
+    order["status_color"] = "#038D63"
+    _charge_order_once(order, user)'''
+mark_new = '''def _mark_order_paid(order, user):
+    if not isinstance(order, dict):
+        return
+    order["status_id"] = "STATUS_ID_ORDERED"
+    order["status_text"] = "Order Placed"
+    order["status_color"] = "#038D63"
+    acc = _active_account()
+    if acc and acc.get("is_first_order"):
+        acc["is_first_order"] = False
+        acc["order_placed"] = True
+    _charge_order_once(order, user)'''
+if app.count(mark_old) != 1:
+    raise RuntimeError("payment helper follow-up: expected 1 match")
+app = app.replace(mark_old, mark_new)
+
+paid_old = '''            for oo in db["orders"]:
+                if str(oo.get("order_num")) == onum:
+                    oo["status_id"] = "STATUS_ID_ORDERED"
+                    oo["status_text"] = "Order Placed"
+                    oo["status_color"] = "#038D63"'''
+paid_new = '''            for oo in db["orders"]:
+                if str(oo.get("order_num")) == onum:
+                    _mark_order_paid(oo, _current_user())'''
+if app.count(paid_old) != 2:
+    raise RuntimeError("payment finalizer follow-up: expected 2 matches")
+app = app.replace(paid_old, paid_new)
+
+local_helper = '''def _local_order_list_item(o):
+    meta = _status_meta(o.get("status_id"))
+    return {
+        "order_id": int(o.get("order_num") or 0) if str(o.get("order_num") or "").isdigit() else None,
+        "order_num": str(o.get("order_num") or ""),
+        "sub_order_num": str(o.get("sub_order_num") or o.get("order_num") or ""),
+        "name": o.get("name"), "image": o.get("image"), "size": o.get("size"),
+        "quantity": o.get("quantity"), "amount": o.get("amount"),
+        "payment_mode": o.get("payment_mode") or ("prepaid" if o.get("upi_amount") else "cod"),
+        "juspay_order_id": o.get("juspay_order_id") or "",
+        "payment_state": "confirmed" if str(o.get("status_id", "")).upper() == "STATUS_ID_ORDERED" else "pending",
+        "cart_session": o.get("cart_session") or "", "live": False,
+        **meta,
+    }
+
+
+'''
+if app.count("async def _live_order_list(cursor=None, limit=10):") != 1:
+    raise RuntimeError("local order helper: expected 1 live-list marker")
+app = app.replace("async def _live_order_list(cursor=None, limit=10):", local_helper + "async def _live_order_list(cursor=None, limit=10):", 1)
+merge_old = '''    if live:
+        items = live["orders"]'''
+merge_new = '''    if live:
+        items = list(live["orders"] or [])
+        known = {str(x.get("order_num") or "") for x in items}
+        for local in db.get("orders") or []:
+            item = _local_order_list_item(local)
+            if item["order_num"] and item["order_num"] not in known:
+                items.insert(0, item)
+                known.add(item["order_num"])'''
+if app.count(merge_old) != 1:
+    raise RuntimeError("order merge: expected 1 live branch")
+app = app.replace(merge_old, merge_new, 1)
+rating_old = '''    review_sentiment = _normalize_review_sentiment(sp) if sp else []
+    rating = sup.get("average_rating")
+    rating_count = sup.get("rating_count")'''
+rating_new = '''    review_sentiment = _normalize_review_sentiment(sp or dp) if (sp or dp) else []
+    rating = (sup.get("average_rating") or sup.get("rating") or
+              p.get("average_rating") or p.get("rating"))
+    rating_count = (sup.get("rating_count") or sup.get("ratings_count") or
+                    p.get("rating_count") or p.get("ratings_count"))'''
+if app.count(rating_old) != 1:
+    raise RuntimeError("rating mapping: expected 1 match")
+app = app.replace(rating_old, rating_new, 1)
+
 app_path.write_text(app, encoding="utf-8")
 
 
