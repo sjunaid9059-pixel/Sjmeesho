@@ -13,9 +13,37 @@ html_path = ROOT / "index.html"
 app = app_path.read_text(encoding="utf-8")
 html = html_path.read_text(encoding="utf-8")
 
+telegram_diag = '''@app.get("/api/telegram/health")
+async def api_telegram_health():
+    token = (os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token or token.startswith("YOUR_"):
+        return {"configured": False, "telegram_ok": False, "message": "BOT_TOKEN is not configured in this service"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            me_resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+            wh_resp = await client.get(f"https://api.telegram.org/bot{token}/getWebhookInfo")
+        me = me_resp.json()
+        wh = wh_resp.json()
+        info = wh.get("result") or {}
+        return {
+            "configured": True,
+            "telegram_ok": bool(me.get("ok")),
+            "bot_username": (me.get("result") or {}).get("username"),
+            "webhook_url": info.get("url") or "",
+            "pending_updates": info.get("pending_update_count", 0),
+            "last_error_message": info.get("last_error_message"),
+            "last_error_date": info.get("last_error_date"),
+        }
+    except Exception as exc:
+        return {"configured": True, "telegram_ok": False, "error": type(exc).__name__}
+'''
+
 # Render may use a persistent disk. Do not fail or mutate files twice when the
 # repair is already present from an earlier boot.
 if 'SESSION_COOKIE = "sj_session"' in app and 'credentials: "same-origin"' in html:
+    if "async def api_telegram_health" not in app:
+        app = app.replace('@app.get("/api/auth/me")', telegram_diag + '\n@app.get("/api/auth/me")', 1)
+        app_path.write_text(app, encoding="utf-8")
     print("live patch already present")
     raise SystemExit(0)
 
@@ -289,6 +317,9 @@ app = app.replace(fod_old, "", 1)
 fallback_uri = '''    return (f"upi://pay?tr={ref}&pa=MEESHOONLINEPG@ybl&mc=5262"
             f"&pn=MEESHO%20TECHNOLOGIES%20PRIVATE%20LIMITED&am={amt}&cu=INR&mode=04&purpose=00")'''
 app = once(app, fallback_uri, '    return ""', "remove hard-coded payment URI")
+
+if "async def api_telegram_health" not in app:
+    app = app.replace('@app.get("/api/auth/me")', telegram_diag + '\n@app.get("/api/auth/me")', 1)
 
 app_path.write_text(app, encoding="utf-8")
 
