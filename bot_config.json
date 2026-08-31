@@ -1,0 +1,6 @@
+{
+  "token": "YOUR_TELEGRAM_BOT_TOKEN_HERE",
+  "shop_url": "https://YOUR_PUBLIC_URL",
+  "bot_username": "YourBotUsername",
+  "welcome_text": "🤖 <b>SJ Shop — order bot</b>\n\nTap the button below to open the shop inside Telegram and start ordering."
+}
