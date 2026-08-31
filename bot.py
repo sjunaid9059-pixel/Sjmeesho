@@ -44,10 +44,12 @@ def current_shop_url():
     except Exception:
         pass
     try:
-        with open(CFG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f).get("shop_url", SHOP_URL).rstrip("/")
+        configured = json.load(open(CFG_PATH, "r", encoding="utf-8")).get("shop_url", "").rstrip("/")
+        if configured.startswith("https://") and "YOUR_" not in configured:
+            return configured
     except Exception:
-        return SHOP_URL
+        pass
+    return SHOP_URL
 
 
 def webapp_url():
