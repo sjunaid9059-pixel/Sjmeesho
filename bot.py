@@ -46,9 +46,16 @@ def current_shop_url():
         return SHOP_URL
 
 
+def webapp_url():
+    """Force Telegram to open the newest deployed UI instead of a cached copy."""
+    base = current_shop_url()
+    sep = "&" if "?" in base else "?"
+    return base + sep + "v=20260901"
+
+
 def send_start(chat_id, text=None, reply_to=None):
     text = text or CFG.get("welcome_text") or "Open the shop:"
-    url = current_shop_url()
+    url = webapp_url()
     keyboard = {
         "inline_keyboard": [
             [{"text": "🛍️ Open Shop", "web_app": {"url": url}}],
@@ -82,7 +89,7 @@ def main():
         try:
             api_call("setChatMenuButton", menu_button={
                 "type": "web_app", "text": "🛍️ Open Shop",
-                "web_app": {"url": current_shop_url()}
+                "web_app": {"url": webapp_url()}
             })
             return True
         except Exception:
