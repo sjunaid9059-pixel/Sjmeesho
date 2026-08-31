@@ -21,6 +21,8 @@ if 'SESSION_COOKIE = "sj_session"' in app and 'credentials: "same-origin"' in ht
 
 app = once(app, "from fastapi import FastAPI, Request", "from fastapi import FastAPI, Request, Response", "fastapi import")
 app = once(app, "\n\ndef _secret():", "\n\nSESSION_COOKIE = \"sj_session\"\ntry:\n    SESSION_TTL_SECONDS = max(86400, int(os.getenv(\"SESSION_TTL_SECONDS\", str(30 * 86400))))\nexcept (TypeError, ValueError):\n    SESSION_TTL_SECONDS = 30 * 86400\n\n\ndef _secret():", "session constants")
+app = once(app, 'def _secret():\n    s = ""', 'def _secret():\n    s = os.getenv("SESSION_SECRET", "").strip()', "session secret env")
+app = once(app, '    try:\n        if os.path.exists(SECRET_FILE):', '    try:\n        if not s and os.path.exists(SECRET_FILE):', "session secret precedence")
 app = once(app, "def _issue_token(username, ttl=7 * 86400):", "def _issue_token(username, ttl=None):", "token ttl")
 app = once(app, '    """Signed session token (user.exp.hmac). No server-side session store."""\n', '    """Signed session token (user.exp.hmac). No server-side session store."""\n    if ttl is None:\n        ttl = SESSION_TTL_SECONDS\n', "token body")
 app = once(app, "\n\ndef _verify_token(token):", "\n\ndef _set_session_cookie(response, token):\n    if response is None or not token:\n        return\n    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL_SECONDS, httponly=True, secure=True, samesite=\"lax\", path=\"/\")\n\n\ndef _verify_token(token):", "cookie helper")
