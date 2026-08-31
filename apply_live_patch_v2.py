@@ -27,6 +27,24 @@ app = once(app, "def _issue_token(username, ttl=7 * 86400):", "def _issue_token(
 app = once(app, '    """Signed session token (user.exp.hmac). No server-side session store."""\n', '    """Signed session token (user.exp.hmac). No server-side session store."""\n    if ttl is None:\n        ttl = SESSION_TTL_SECONDS\n', "token body")
 app = once(app, "\n\ndef _verify_token(token):", "\n\ndef _set_session_cookie(response, token):\n    if response is None or not token:\n        return\n    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL_SECONDS, httponly=True, secure=True, samesite=\"lax\", path=\"/\")\n\n\ndef _verify_token(token):", "cookie helper")
 app = once(app, '    token = request.headers.get("X-Session", "") or request.headers.get("X-Tg-Init-Data", "")\n    username = _verify_token(token)\n', '    token_candidates = [request.headers.get("X-Session", ""), request.cookies.get(SESSION_COOKIE, ""), request.headers.get("X-Tg-Init-Data", "")]\n    token = ""\n    username = None\n    for candidate in token_candidates:\n        candidate = (candidate or "").strip()\n        if not candidate:\n            continue\n        username = _verify_token(candidate)\n        if username:\n            token = candidate\n            break\n', "auth middleware")
+app = once(app, '''        users = _ensure_admin()
+        user = users.get(username)
+        if user and not user.get("active"):
+''', '''        users = _ensure_admin()
+        user = users.get(username)
+        if not user and username:
+            try:
+                next_id = max([int(x.get("id") or 0) for x in users.values()] or [0]) + 1
+                user = {"id": next_id, "username": username, "password": "",
+                        "role": "user", "plan": "free", "active": True,
+                        "created_at": int(time.time()), "last_seen": int(time.time()),
+                        "used": {"date": "", "count": 0}, "trial_used": 0}
+                users[username] = user
+                _save_users(users)
+            except Exception:
+                user = None
+        if user and not user.get("active"):
+''', "restore user from valid session")
 app = once(app, "async def api_auth_login(data: dict = None):", "async def api_auth_login(data: dict = None, request: Request = None, response: Response = None):", "login signature")
 app = once(app, '    return {"ok": True, "token": _issue_token(username),\n            "user": {"username": username, "role": u.get("role"),\n', '    token = _issue_token(username)\n    _set_session_cookie(response, token)\n    return {"ok": True, "token": token,\n            "user": {"username": username, "role": u.get("role"),\n', "login cookie")
 app = once(app, "async def api_auth_me():\n    u = _current_user()\n    if not u:\n        return {\"authenticated\": False}\n    return _auth_me(u)\n", "async def api_auth_me(response: Response = None):\n    u = _current_user()\n    if not u:\n        return {\"authenticated\": False}\n    token = _issue_token(u.get(\"username\"))\n    _set_session_cookie(response, token)\n    out = _auth_me(u)\n    out[\"token\"] = token\n    return out\n", "auth me")
