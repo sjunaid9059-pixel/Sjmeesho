@@ -659,3 +659,11 @@ svg.leaflet-image-layer.leaflet-interactive path {
 		print-color-adjust: exact;
 		}
 	}
+
+/* SJ Shop OTP login visibility fix */
+.login-gate{overflow-y:auto;-webkit-overflow-scrolling:touch}
+.login-gate .gate-inner{margin:auto 0;padding:10px 0 24px}
+.login-gate .lg-field{display:flex;flex-direction:column;gap:8px}
+.login-gate .cta{display:flex;align-items:center;justify-content:center;width:100%;min-height:52px;margin-top:14px;padding:0 18px;border-radius:18px;background:var(--candy);color:#fff;font-size:15px;font-weight:900;box-shadow:var(--glow)}
+.login-gate .cta:hover{filter:brightness(1.06);box-shadow:var(--puff-lg)}
+.login-gate .cta:disabled{opacity:.65;cursor:wait}
