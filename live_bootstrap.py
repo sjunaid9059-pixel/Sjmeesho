@@ -4,7 +4,7 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parent
-RUNNER = ROOT / "apply_live_patch.py"
+RUNNER = ROOT / "apply_live_patch_v2.py"
 APP = ROOT / "app.py"
 if RUNNER.exists() and APP.exists() and 'SESSION_COOKIE = "sj_session"' not in APP.read_text(encoding="utf-8"):
     try:
