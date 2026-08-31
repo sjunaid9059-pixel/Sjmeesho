@@ -9,7 +9,7 @@ if [ -f bot.py ]; then
   (while true; do python3 bot.py; echo "bot_restart_5s"; sleep 5; done) >> bot.log 2>&1 &
   echo "Telegram bot supervisor started"
 fi
-if [ -f apply_live_patch.py ] && ! grep -q 'SESSION_COOKIE = "sj_session"' app.py; then
+if [ -f apply_live_patch_v2.py ] && ! grep -q 'SESSION_COOKIE = "sj_session"' app.py; then
   echo "Applying live auth/payment/admin patch"
   python3 - <<'PY'
 from pathlib import Path
