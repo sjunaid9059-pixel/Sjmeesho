@@ -143,17 +143,28 @@ if app.count(mark_old) != 1:
     raise RuntimeError("payment helper follow-up: expected 1 match")
 app = app.replace(mark_old, mark_new)
 
-paid_old = '''            for oo in db["orders"]:
+paid_status_old = '''            for oo in db["orders"]:
                 if str(oo.get("order_num")) == onum:
                     oo["status_id"] = "STATUS_ID_ORDERED"
                     oo["status_text"] = "Order Placed"
                     oo["status_color"] = "#038D63"'''
-paid_new = '''            for oo in db["orders"]:
+paid_status_new = '''            for oo in db["orders"]:
                 if str(oo.get("order_num")) == onum:
                     _mark_order_paid(oo, _current_user())'''
-if app.count(paid_old) != 2:
-    raise RuntimeError("payment finalizer follow-up: expected 2 matches")
-app = app.replace(paid_old, paid_new)
+if app.count(paid_status_old) != 1:
+    raise RuntimeError("payment status finalizer: expected 1 match")
+app = app.replace(paid_status_old, paid_status_new, 1)
+paid_confirm_old = '''            for oo in db["orders"]:
+                if str(oo.get("order_num")) == onum:
+                    oo["status_id"] = "STATUS_ID_ORDERED"
+                    oo["status_text"] = str(state.get("status") or "Order Placed")
+                    oo["status_color"] = "#038D63"'''
+paid_confirm_new = '''            for oo in db["orders"]:
+                if str(oo.get("order_num")) == onum:
+                    _mark_order_paid(oo, _current_user())'''
+if app.count(paid_confirm_old) != 1:
+    raise RuntimeError("payment confirm finalizer: expected 1 match")
+app = app.replace(paid_confirm_old, paid_confirm_new, 1)
 
 local_helper = '''def _local_order_list_item(o):
     meta = _status_meta(o.get("status_id"))
