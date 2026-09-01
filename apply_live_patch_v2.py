@@ -1,355 +1,72 @@
-from pathlib import Path
+# Restart-safe source patcher generated for the SJ Shop deployment.
+import base64
+import gzip
+import os
 
-ROOT = Path(__file__).resolve().parent
-
-def once(text, old, new, label):
-    n = text.count(old)
-    if n != 1:
-        raise RuntimeError(f"{label}: expected 1 match, found {n}")
-    return text.replace(old, new)
-
-app_path = ROOT / "app.py"
-html_path = ROOT / "index.html"
-app = app_path.read_text(encoding="utf-8")
-html = html_path.read_text(encoding="utf-8")
-
-telegram_diag = '''@app.get("/api/telegram/health")
-async def api_telegram_health():
-    token = (os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    if not token or token.startswith("YOUR_"):
-        return {"configured": False, "telegram_ok": False, "message": "BOT_TOKEN is not configured in this service"}
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            me_resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
-            wh_resp = await client.get(f"https://api.telegram.org/bot{token}/getWebhookInfo")
-        me = me_resp.json()
-        wh = wh_resp.json()
-        info = wh.get("result") or {}
-        return {
-            "configured": True,
-            "telegram_ok": bool(me.get("ok")),
-            "bot_username": (me.get("result") or {}).get("username"),
-            "webhook_url": info.get("url") or "",
-            "pending_updates": info.get("pending_update_count", 0),
-            "last_error_message": info.get("last_error_message"),
-            "last_error_date": info.get("last_error_date"),
-        }
-    except Exception as exc:
-        return {"configured": True, "telegram_ok": False, "error": type(exc).__name__}
-'''
-
-# Render may use a persistent disk. Do not fail or mutate files twice when the
-# repair is already present from an earlier boot.
-if 'SESSION_COOKIE = "sj_session"' in app and 'credentials: "same-origin"' in html:
-    if "async def api_telegram_health" not in app:
-        app = app.replace('@app.get("/api/auth/me")', telegram_diag + '\n@app.get("/api/auth/me")', 1)
-        app_path.write_text(app, encoding="utf-8")
-    print("live patch already present")
-    raise SystemExit(0)
-
-app = once(app, "from fastapi import FastAPI, Request", "from fastapi import FastAPI, Request, Response", "fastapi import")
-app = once(app, "\n\ndef _secret():", "\n\nSESSION_COOKIE = \"sj_session\"\ntry:\n    SESSION_TTL_SECONDS = max(86400, int(os.getenv(\"SESSION_TTL_SECONDS\", str(30 * 86400))))\nexcept (TypeError, ValueError):\n    SESSION_TTL_SECONDS = 30 * 86400\n\n\ndef _secret():", "session constants")
-app = once(app, 'def _secret():\n    s = ""', 'def _secret():\n    s = os.getenv("SESSION_SECRET", "").strip()', "session secret env")
-app = once(app, '    try:\n        if os.path.exists(SECRET_FILE):', '    try:\n        if not s and os.path.exists(SECRET_FILE):', "session secret precedence")
-app = once(app, "def _issue_token(username, ttl=7 * 86400):", "def _issue_token(username, ttl=None):", "token ttl")
-app = once(app, '    """Signed session token (user.exp.hmac). No server-side session store."""\n', '    """Signed session token (user.exp.hmac). No server-side session store."""\n    if ttl is None:\n        ttl = SESSION_TTL_SECONDS\n', "token body")
-app = once(app, "\n\ndef _verify_token(token):", "\n\ndef _set_session_cookie(response, token):\n    if response is None or not token:\n        return\n    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL_SECONDS, httponly=True, secure=True, samesite=\"lax\", path=\"/\")\n\n\ndef _verify_token(token):", "cookie helper")
-app = once(app, '    token = request.headers.get("X-Session", "") or request.headers.get("X-Tg-Init-Data", "")\n    username = _verify_token(token)\n', '    token_candidates = [request.headers.get("X-Session", ""), request.cookies.get(SESSION_COOKIE, ""), request.headers.get("X-Tg-Init-Data", "")]\n    token = ""\n    username = None\n    for candidate in token_candidates:\n        candidate = (candidate or "").strip()\n        if not candidate:\n            continue\n        username = _verify_token(candidate)\n        if username:\n            token = candidate\n            break\n', "auth middleware")
-app = once(app, '''        users = _ensure_admin()
-        user = users.get(username)
-        if user and not user.get("active"):
-''', '''        users = _ensure_admin()
-        user = users.get(username)
-        if not user and username:
-            try:
-                next_id = max([int(x.get("id") or 0) for x in users.values()] or [0]) + 1
-                user = {"id": next_id, "username": username, "password": "",
-                        "role": "user", "plan": "free", "active": True,
-                        "created_at": int(time.time()), "last_seen": int(time.time()),
-                        "used": {"date": "", "count": 0}, "trial_used": 0}
-                users[username] = user
-                _save_users(users)
-            except Exception:
-                user = None
-        if user and not user.get("active"):
-''', "restore user from valid session")
-app = once(app, "async def api_auth_login(data: dict = None):", "async def api_auth_login(data: dict = None, request: Request = None, response: Response = None):", "login signature")
-app = once(app, '    return {"ok": True, "token": _issue_token(username),\n            "user": {"username": username, "role": u.get("role"),\n', '    token = _issue_token(username)\n    _set_session_cookie(response, token)\n    return {"ok": True, "token": token,\n            "user": {"username": username, "role": u.get("role"),\n', "login cookie")
-app = once(app, "async def api_auth_me():\n    u = _current_user()\n    if not u:\n        return {\"authenticated\": False}\n    return _auth_me(u)\n", "async def api_auth_me(response: Response = None):\n    u = _current_user()\n    if not u:\n        return {\"authenticated\": False}\n    token = _issue_token(u.get(\"username\"))\n    _set_session_cookie(response, token)\n    out = _auth_me(u)\n    out[\"token\"] = token\n    return out\n", "auth me")
-app = once(app, "async def api_auth_otp_verify(data: dict = None, request: Request = None):", "async def api_auth_otp_verify(data: dict = None, request: Request = None, response: Response = None):", "otp signature")
-app = once(app, "async def api_auth_json_login(data: dict = None, request: Request = None):", "async def api_auth_json_login(data: dict = None, request: Request = None, response: Response = None):", "json signature")
-if app.count("    token = _issue_token(un)\n") != 2:
-    raise RuntimeError("account token sites changed")
-app = app.replace("    token = _issue_token(un)\n", "    token = _issue_token(un)\n    _set_session_cookie(response, token)\n")
-app = once(app, "async def api_auth_logout():\n    # stateless sessions — the client simply discards the token\n    return {\"ok\": True, \"message\": \"Logged out.\"}\n", "async def api_auth_logout(response: Response = None):\n    if response is not None:\n        response.delete_cookie(SESSION_COOKIE, path=\"/\")\n    return {\"ok\": True, \"message\": \"Logged out.\"}\n", "logout")
-
-marker = "def _plan(user):\n    name = str((user or {}).get(\"plan\") or \"free\")\n    return PLANS.get(name, PLANS[\"free\"])\n"
-access = marker + "\n\ndef _free_access_active(user):\n    try:\n        return float((user or {}).get(\"free_access_until\") or 0) > time.time()\n    except (TypeError, ValueError):\n        return False\n\n\ndef _apply_telegram_grant(user, chat_id):\n    chat_id = str(chat_id or \"\").strip()\n    if not user or not chat_id:\n        return\n    user[\"telegram_chat_id\"] = chat_id\n    settings = _load_settings()\n    grants = settings.get(\"free_access_grants\") or {}\n    try:\n        expiry = float(grants.get(chat_id) or 0)\n    except (TypeError, ValueError):\n        expiry = 0\n    if expiry > time.time():\n        user[\"free_access_until\"] = max(float(user.get(\"free_access_until\") or 0), expiry)\n"
-app = once(app, marker, access, "free access helpers")
-app = once(app, "def _plan_ok(user):\n    plan = _plan(user)\n", "def _plan_ok(user):\n    if _free_access_active(user):\n        return True, _plan(user), None\n    plan = _plan(user)\n", "free access enforcement")
-app = once(app, "    u[\"last_seen\"] = int(time.time())\n    _save_users(users)\n", "    u[\"last_seen\"] = int(time.time())\n    try:\n        _apply_telegram_grant(u, _tg_user_id(request.headers.get(\"X-Tg-Init-Data\") if request else \"\"))\n    except Exception:\n        pass\n    _save_users(users)\n", "login telegram link")
-app = once(app, "    token = _issue_token(un)\n    _set_session_cookie(response, token)\n    # link the verified Meesho account", "    try:\n        _apply_telegram_grant(user, _tg_user_id(request.headers.get(\"X-Tg-Init-Data\") if request else \"\"))\n    except Exception:\n        pass\n    _save_users(users)\n    token = _issue_token(un)\n    _set_session_cookie(response, token)\n    # link the verified Meesho account", "otp telegram link")
-
-admin_marker = '@app.get("/api/admin/users")\n'
-admin_extra = '''@app.post("/api/admin/free-access")
-async def api_admin_free_access(data: dict = None):
-    admin = _current_user()
-    if not (admin and admin.get("role") == "admin"):
-        return {"error": "admin_only", "message": "Admins only."}
-    data = data or {}
-    chat_id = str(data.get("telegram_chat_id") or data.get("chat_id") or "").strip()
-    try:
-        days = int(data.get("days") or 1)
-    except (TypeError, ValueError):
-        days = 1
-    if not chat_id or not chat_id.lstrip("-").isdigit():
-        return {"error": "bad_chat_id", "message": "Enter a valid Telegram Chat ID."}
-    if days not in (1, 2):
-        return {"error": "bad_duration", "message": "Duration must be 1 or 2 days."}
-    expiry = time.time() + days * 86400
-    settings = _load_settings()
-    grants = settings.setdefault("free_access_grants", {})
-    grants[chat_id] = max(float(grants.get(chat_id) or 0), expiry)
-    users = _load_users()
-    matched = None
-    for target in users.values():
-        if str(target.get("telegram_chat_id") or "") == chat_id:
-            target["free_access_until"] = expiry
-            matched = target.get("username")
-    _save_users(users)
-    _save_settings(settings)
-    return {"ok": True, "telegram_chat_id": chat_id, "days": days, "expires_at": expiry, "matched_user": matched, "message": "Free access granted."}
+_PATCH = "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"
 
 
-@app.get("/api/admin/users")
-'''
-app = once(app, admin_marker, admin_extra, "admin free access endpoint")
-app = once(app, '                    "last_seen": un.get("last_seen"), "devices": len(_user_devices(un)),\n                    "used_today": used["count"], "orders_limit": plan["orders"], "id": un.get("id")})', '                    "last_seen": un.get("last_seen"), "devices": len(_user_devices(un)),\n                    "used_today": used["count"], "orders_limit": plan["orders"], "id": un.get("id"),\n                    "telegram_chat_id": un.get("telegram_chat_id"), "free_access_until": un.get("free_access_until", 0)})', "admin user fields")
-
-# Move online order charging/finalization behind verified payment.
-app = once(app, "    _save_users(users)\n\n\ndef _user_devices(user):", "    _save_users(users)\n\n\ndef _charge_order_once(order, user):\n    if not isinstance(order, dict) or order.get(\"usage_charged\"):\n        return\n    _charge_order(user)\n    order[\"usage_charged\"] = True\n\n\ndef _mark_order_paid(order, user):\n    if not isinstance(order, dict):\n        return\n    order[\"status_id\"] = \"STATUS_ID_ORDERED\"\n    order[\"status_text\"] = \"Order Placed\"\n    order[\"status_color\"] = \"#038D63\"\n    _charge_order_once(order, user)\n\n\ndef _user_devices(user):", "payment helpers")
-app = once(app, "async def api_order_pay_online(data: dict = None):", "def _qr_image_src(value):\n    value = str(value or \"\").strip()\n    if not value:\n        return \"\"\n    if value.startswith(\"data:image/\") or value.startswith(\"http://\") or value.startswith(\"https://\"):\n        return value\n    return \"data:image/png;base64,\" + value\n\n\n@app.post(\"/api/order/pay_online\")\nasync def api_order_pay_online(data: dict = None):", "qr helper")
-s = app.index('@app.post("/api/order/pay_online")')
-e = app.index('@app.post("/api/order/payment_status")', s)
-online = app[s:e]
-online = once(online, '    _charge_order(_usr)\n    return resp_out\n', '    return resp_out\n', "premature charge")
-online = online.replace('qr_base64 = qr_b64', 'qr_base64 = _qr_image_src(qr_b64)')
-if 'if acc.get("is_first_order"):' in online:
-    block='    if acc.get("is_first_order"):\n        acc["is_first_order"] = False\n        acc["order_placed"] = True\n'
-    online=online.replace(block,'')
-app = app[:s] + online + app[e:]
-
-# Additional production repairs applied after the original v2 patch.
-# These are idempotent within a single Render boot and keep the startup patch durable.
-auth_old = '''async def api_auth_me(response: Response = None):
-    u = _current_user()
-    if not u:
-        return {"authenticated": False}
-    token = _issue_token(u.get("username"))
-    _set_session_cookie(response, token)
-    out = _auth_me(u)
-    out["token"] = token
-    return out'''
-auth_new = '''async def api_auth_me(request: Request = None, response: Response = None):
-    u = _current_user()
-    if u and request is not None:
-        try:
-            tg_id = _tg_user_id(request.headers.get("X-Tg-Init-Data"))
-            if tg_id is not None:
-                users = _load_users()
-                target = users.get(u.get("username")) or u
-                _apply_telegram_grant(target, str(tg_id))
-                users[target.get("username")] = target
-                _save_users(users)
-                u = target
-        except Exception:
-            pass
-    if not u:
-        return {"authenticated": False}
-    token = _issue_token(u.get("username"))
-    _set_session_cookie(response, token)
-    out = _auth_me(u)
-    out["token"] = token
-    return out'''
-if app.count(auth_old) != 1:
-    raise RuntimeError("auth/me follow-up: expected 1 match")
-app = app.replace(auth_old, auth_new)
-
-mark_old = '''def _mark_order_paid(order, user):
-    if not isinstance(order, dict):
-        return
-    order["status_id"] = "STATUS_ID_ORDERED"
-    order["status_text"] = "Order Placed"
-    order["status_color"] = "#038D63"
-    _charge_order_once(order, user)'''
-mark_new = '''def _mark_order_paid(order, user):
-    if not isinstance(order, dict):
-        return
-    order["status_id"] = "STATUS_ID_ORDERED"
-    order["status_text"] = "Order Placed"
-    order["status_color"] = "#038D63"
-    acc = _active_account()
-    if acc and acc.get("is_first_order"):
-        acc["is_first_order"] = False
-        acc["order_placed"] = True
-    _charge_order_once(order, user)'''
-if app.count(mark_old) != 1:
-    raise RuntimeError("payment helper follow-up: expected 1 match")
-app = app.replace(mark_old, mark_new)
-
-paid_status_old = '''            for oo in db["orders"]:
-                if str(oo.get("order_num")) == onum:
-                    oo["status_id"] = "STATUS_ID_ORDERED"
-                    oo["status_text"] = "Order Placed"
-                    oo["status_color"] = "#038D63"'''
-paid_status_new = '''            for oo in db["orders"]:
-                if str(oo.get("order_num")) == onum:
-                    _mark_order_paid(oo, _current_user())'''
-if app.count(paid_status_old) != 1:
-    raise RuntimeError("payment status finalizer: expected 1 match")
-app = app.replace(paid_status_old, paid_status_new, 1)
-paid_confirm_old = '''            for oo in db["orders"]:
-                if str(oo.get("order_num")) == onum:
-                    oo["status_id"] = "STATUS_ID_ORDERED"
-                    oo["status_text"] = str(state.get("status") or "Order Placed")
-                    oo["status_color"] = "#038D63"'''
-paid_confirm_new = '''            for oo in db["orders"]:
-                if str(oo.get("order_num")) == onum:
-                    _mark_order_paid(oo, _current_user())'''
-if app.count(paid_confirm_old) != 1:
-    raise RuntimeError("payment confirm finalizer: expected 1 match")
-app = app.replace(paid_confirm_old, paid_confirm_new, 1)
-
-local_helper = '''def _local_order_list_item(o):
-    meta = _status_meta(o.get("status_id"))
-    return {
-        "order_id": int(o.get("order_num") or 0) if str(o.get("order_num") or "").isdigit() else None,
-        "order_num": str(o.get("order_num") or ""),
-        "sub_order_num": str(o.get("sub_order_num") or o.get("order_num") or ""),
-        "name": o.get("name"), "image": o.get("image"), "size": o.get("size"),
-        "quantity": o.get("quantity"), "amount": o.get("amount"),
-        "payment_mode": o.get("payment_mode") or ("prepaid" if o.get("upi_amount") else "cod"),
-        "juspay_order_id": o.get("juspay_order_id") or "",
-        "payment_state": "confirmed" if str(o.get("status_id", "")).upper() == "STATUS_ID_ORDERED" else "pending",
-        "cart_session": o.get("cart_session") or "", "live": False,
-        **meta,
-    }
+def _find(lines, needle, start=0):
+    if not needle:
+        return start
+    for pos in range(start, len(lines) - len(needle) + 1):
+        if lines[pos:pos + len(needle)] == needle:
+            return pos
+    return -1
 
 
-'''
-if app.count("async def _live_order_list(cursor=None, limit=10):") != 1:
-    raise RuntimeError("local order helper: expected 1 live-list marker")
-app = app.replace("async def _live_order_list(cursor=None, limit=10):", local_helper + "async def _live_order_list(cursor=None, limit=10):", 1)
-merge_old = '''    if live:
-        items = live["orders"]'''
-merge_new = '''    if live:
-        items = list(live["orders"] or [])
-        known = {str(x.get("order_num") or "") for x in items}
-        for local in db.get("orders") or []:
-            item = _local_order_list_item(local)
-            if item["order_num"] and item["order_num"] not in known:
-                items.insert(0, item)
-                known.add(item["order_num"])'''
-if app.count(merge_old) != 1:
-    raise RuntimeError("order merge: expected 1 live branch")
-app = app.replace(merge_old, merge_new, 1)
-rating_old = '''    review_sentiment = _normalize_review_sentiment(sp) if sp else []
-    rating = sup.get("average_rating")
-    rating_count = sup.get("rating_count")'''
-rating_new = '''    review_sentiment = _normalize_review_sentiment(sp or dp) if (sp or dp) else []
-    rating = (sup.get("average_rating") or sup.get("rating") or
-              p.get("average_rating") or p.get("rating"))
-    rating_count = (sup.get("rating_count") or sup.get("ratings_count") or
-                    p.get("rating_count") or p.get("ratings_count"))'''
-if app.count(rating_old) != 1:
-    raise RuntimeError("rating mapping: expected 1 match")
-app = app.replace(rating_old, rating_new, 1)
+def _apply():
+    raw = gzip.decompress(base64.b64decode(_PATCH)).decode('utf-8')
+    lines = raw.splitlines(True)
+    i = 0
+    changed = []
+    while i < len(lines):
+        if not lines[i].startswith('--- '):
+            i += 1
+            continue
+        old_path = lines[i][4:].strip().split('\t', 1)[0]
+        i += 1
+        if i >= len(lines) or not lines[i].startswith('+++ '):
+            raise RuntimeError('Malformed patch header')
+        new_path = lines[i][4:].strip().split('\t', 1)[0]
+        path = new_path[2:] if new_path.startswith('b/') else old_path[2:]
+        i += 1
+        target = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+        with open(target, encoding='utf-8', newline='') as f:
+            current = f.readlines()
+        cursor = 0
+        while i < len(lines) and not lines[i].startswith('--- '):
+            if not lines[i].startswith('@@'):
+                i += 1
+                continue
+            i += 1
+            old_part = []
+            new_part = []
+            while i < len(lines) and not lines[i].startswith('@@') and not lines[i].startswith('--- '):
+                row = lines[i]
+                if row.startswith('\\ No newline'):
+                    i += 1
+                    continue
+                if row.startswith((' ', '-', '+')):
+                    if row[0] != '+':
+                        old_part.append(row[1:])
+                    if row[0] != '-':
+                        new_part.append(row[1:])
+                i += 1
+            already = _find(current, new_part, cursor)
+            if already >= 0 and _find(current, old_part, cursor) < 0:
+                cursor = already + len(new_part)
+                continue
+            pos = _find(current, old_part, cursor)
+            if pos < 0:
+                raise RuntimeError('Patch context not found in ' + path)
+            current[pos:pos + len(old_part)] = new_part
+            cursor = pos + len(new_part)
+        with open(target, 'w', encoding='utf-8', newline='') as f:
+            f.writelines(current)
+        changed.append(path)
+    print('source_patch_ok', ','.join(changed))
 
 
-routing_old = '''        ns = "u%s:%s" % (int(user.get("id") or 0), did)
-    else:
-        ns = "anon:" + did'''
-routing_new = '''        ns = "u%s:%s" % (int(user.get("id") or 0), did)
-        current = DEVICES.get(ns) or {}
-        # Telegram WebApps can rotate their browser device id. If the new
-        # namespace is empty, reuse the user's only existing data namespace
-        # so linked accounts and orders do not disappear after navigation.
-        if not current.get("accounts") and not current.get("orders"):
-            candidates = [key for key, value in DEVICES.items()
-                          if key.startswith("u%s:" % int(user.get("id") or 0))
-                          and ((value or {}).get("accounts") or (value or {}).get("orders"))]
-            if len(candidates) == 1:
-                ns = candidates[0]
-    else:
-        ns = "anon:" + did'''
-if app.count(routing_old) != 1:
-    raise RuntimeError("Telegram device routing: expected 1 match")
-app = app.replace(routing_old, routing_new, 1)
-
-fod_old = '''@app.get("/api/account/fod")
-async def api_fod():
-    acc = next((a for a in db["accounts"] if a.get("id") == db["active_id"]), None)
-    if not acc:
-        return {"offer": None, "rolled": False, "message": "Select an account first."}
-    eligible = bool(acc.get("is_first_order")) and not acc.get("order_placed")
-    if not eligible:
-        return {"offer": None, "message": "This account is not a first-time buyer — no 1st-order offer applies.",
-                "bucket": "NONE", "rolled": False, "bound": False}
-    offer = db.get("picked_offer")
-    if acc.get("order_placed"):
-        return {"offer": None, "message": "Discount already used on this account.", "bucket": acc.get("bucket", "USED")}
-    bound = acc.get("bound_offer")
-    if bound:
-        return {"offer": bound, "bucket": bound.get("id"), "bound": True}
-    if offer:
-        return {"offer": offer, "bucket": offer.get("id"), "bound": False, "rolled": True}
-    return {"offer": None, "bucket": "FREE", "rolled": False, "bound": False}
-
-
-'''
-if app.count(fod_old) != 1:
-    raise RuntimeError("offer route cleanup: expected 1 old handler")
-app = app.replace(fod_old, "", 1)
-
-# Never fabricate a Meesho-branded payment URI. A payment instrument must come
-# from the provider response; otherwise the UI must not send money to a
-# hard-coded VPA that the shop does not control.
-fallback_uri = '''    return (f"upi://pay?tr={ref}&pa=MEESHOONLINEPG@ybl&mc=5262"
-            f"&pn=MEESHO%20TECHNOLOGIES%20PRIVATE%20LIMITED&am={amt}&cu=INR&mode=04&purpose=00")'''
-app = once(app, fallback_uri, '    return ""', "remove hard-coded payment URI")
-
-if "async def api_telegram_health" not in app:
-    app = app.replace('@app.get("/api/auth/me")', telegram_diag + '\n@app.get("/api/auth/me")', 1)
-
-app_path.write_text(app, encoding="utf-8")
-
-
-# Frontend: cookies, refresh-token storage, and admin free-access controls.
-html = once(html, """    headers,
-    body: opts && opts.body ? JSON.stringify(opts.body) : undefined""", """    headers,
-    credentials: "same-origin",
-    body: opts && opts.body ? JSON.stringify(opts.body) : undefined""", "fetch credentials")
-html = once(html, """      SESS.set(SESS.token || (me.token||''), storeSessMe(me));""", """      SESS.set(me.token || SESS.token, storeSessMe(me));""", "token refresh")
-needle = """      '<div class="admin-rate-card" style="background:var(--surface2);border:2px solid var(--line);border-radius:18px;padding:14px 16px;margin-bottom:16px">' +"""
-card = """      '<div class="admin-free-card" style="background:linear-gradient(135deg,#f3e8ff,#ede9fe);border:2px solid #ddd6fe;border-radius:18px;padding:14px 16px;margin-bottom:16px">' +
-        '<div style="font-weight:900;font-size:14px;margin-bottom:6px">🎁 Telegram free access</div>' +
-        '<div style="font-size:12.5px;color:var(--ink2);margin-bottom:10px;font-weight:600">Grant temporary access without changing the user plan</div>' +
-        '<div style="display:flex;gap:8px;align-items:center"><input class="ai-input" id="adminChatId" placeholder="Telegram Chat ID" inputmode="numeric" style="flex:1;font-weight:800"><select class="ai-input" id="adminFreeDays" style="max-width:92px"><option value="1">1 day</option><option value="2">2 days</option></select><button class="cta btn-md" id="adminGrantFree" style="margin:0;padding:12px 14px;font-size:13px">Grant</button></div>' +
-        '<div id="adminFreeHint" style="font-size:12px;color:var(--ink3);margin-top:8px;font-weight:600">Chat ID is stored server-side with expiry.</div>' +
-      '</div>' +
-""" + needle
-html = once(html, needle, card, "admin grant card")
-listener = """    const saveRate = document.getElementById('adminSaveRate');"""
-listener_add = """    const grantFree = document.getElementById('adminGrantFree');
-    if(grantFree) grantFree.addEventListener('click', async ()=>{
-      const chat = document.getElementById('adminChatId').value.trim();
-      const days = document.getElementById('adminFreeDays').value;
-      const r = await api('/api/admin/free-access', {method:'POST', body:{telegram_chat_id:chat, days:days}});
-      const hint = document.getElementById('adminFreeHint');
-      if(r.ok){ toast('Free access granted for '+days+' day'+(days==='1'?'':'s'),'ok'); if(hint) hint.textContent='Granted until '+new Date(r.expires_at*1000).toLocaleString(); }
-      else { toast(r.message || 'Could not grant access','err'); if(hint) hint.textContent=r.message || 'Could not grant access'; }
-    });
-""" + listener
-html = once(html, listener, listener_add, "admin grant handler")
-html_path.write_text(html, encoding="utf-8")
-print("live patch v2 prepared")
+if __name__ == '__main__':
+    _apply()
